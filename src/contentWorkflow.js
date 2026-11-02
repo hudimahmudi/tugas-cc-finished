@@ -43,6 +43,8 @@ export function mapContentFromApi(content) {
     channel: platformLabels[content.platform] || content.platform,
     channelHandle: content.handle_name,
     ownerName: content.owner_name || '',
+    assignedEditorId: content.assigned_editor_id || '',
+    assignedEditorName: content.assigned_editor_name || '',
     title: content.title,
     concept: content.description || '',
     format: formatLabels[content.format_type] || content.format_type,
@@ -82,5 +84,6 @@ export function mapContentToApi(content) {
     draft_url: content.draftUrl.trim() || null,
     review_notes: content.reviewNotes.trim() || null,
     published_url: content.publishedUrl.trim() || null,
+    assigned_editor_id: content.assignedEditorId || null,
   }
 }

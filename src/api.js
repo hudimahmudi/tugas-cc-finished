@@ -33,6 +33,10 @@ export function listChannels() {
   return request('/channels')
 }
 
+export function listEditors() {
+  return request('/users/editors')
+}
+
 export function createChannel(channel) {
   return request('/channels', { method: 'POST', body: channel })
 }
@@ -44,12 +48,16 @@ export function listContents(filters = {}) {
   return request(`/contents${params.size ? `?${params}` : ''}`)
 }
 
+export function getContent(id) {
+  return request(`/contents/${id}`)
+}
+
 export function createContent(content) {
   return request('/contents', { method: 'POST', body: content })
 }
 
-export function updateContent(id, content) {
-  return request(`/contents/${id}`, { method: 'PUT', body: content })
+export function updateContent(id, content, method = 'PUT') {
+  return request(`/contents/${id}`, { method, body: content })
 }
 
 export function deleteContent(id) {

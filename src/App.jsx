@@ -11,8 +11,10 @@ import {
   createContent as createContentRequest,
   createMetricSnapshot,
   deleteContent as deleteContentRequest,
+  getContent as getContentRequest,
   listChannels,
   listContents,
+  listEditors,
   register as registerRequest,
   replaceChecklists,
   updateContent as updateContentRequest,
@@ -56,6 +58,7 @@ function App() {
   const page = pageRoutes[location.pathname] || 'not-found'
   const [contents, setContents] = useState([])
   const [channels, setChannels] = useState([])
+  const [editors, setEditors] = useState([])
   const [loading, setLoading] = useState(Boolean(user))
   const [loadError, setLoadError] = useState('')
   const [notice, setNotice] = useState('')
@@ -73,26 +76,38 @@ function App() {
   useEffect(() => {
     if (user && ['login', 'register', 'not-found'].includes(page)) {
       navigate('/dashboard', { replace: true })
+    } else if (user?.role === 'editor' && page === 'matrix') {
+      navigate('/contents', { replace: true })
     } else if (!user && !['login', 'register'].includes(page)) {
       navigate('/login', { replace: true })
     }
   }, [navigate, page, user])
 
   async function refreshWorkspace() {
-    const [channelRows, contentRows] = await Promise.all([listChannels(), listContents()])
+    const [channelRows, contentRows, editorRows] = await Promise.all([
+      listChannels(),
+      listContents(),
+      user.role === 'editor' ? Promise.resolve([]) : listEditors(),
+    ])
     setChannels(channelRows)
     setContents(contentRows.map(mapContentFromApi))
+    setEditors(editorRows)
   }
 
   useEffect(() => {
     if (!user) return undefined
 
     let active = true
-    Promise.all([listChannels(), listContents()])
-      .then(([channelRows, contentRows]) => {
+    Promise.all([
+      listChannels(),
+      listContents(),
+      user.role === 'editor' ? Promise.resolve([]) : listEditors(),
+    ])
+      .then(([channelRows, contentRows, editorRows]) => {
         if (!active) return
         setChannels(channelRows)
         setContents(contentRows.map(mapContentFromApi))
+        setEditors(editorRows)
       })
       .catch((error) => {
         if (!active) return
@@ -137,6 +152,7 @@ function App() {
     localStorage.removeItem('creator-session-user')
     setUser(null)
     setChannels([])
+    setEditors([])
     setContents([])
     setLoading(false)
     navigate('/login', { replace: true })
@@ -152,10 +168,24 @@ function App() {
   }
 
   async function updateContent(updatedContent) {
-    if (updatedContent.status !== 'published') {
+    const originalContent = contents.find((content) => content.id === updatedContent.id)
+    if (user.role !== 'editor' && updatedContent.status !== 'published') {
       await replaceChecklists(updatedContent.id, checklistPayload(updatedContent.productionChecklist))
     }
-    await updateContentRequest(updatedContent.id, mapContentToApi(updatedContent))
+    if (user.role === 'editor') {
+      await updateContentRequest(updatedContent.id, {
+        status: updatedContent.status,
+        draft_url: updatedContent.draftUrl.trim() || null,
+        review_notes: updatedContent.reviewNotes.trim() || null,
+      }, 'PATCH')
+    } else if (user.role === 'creator' && originalContent?.status === 'ready') {
+      await updateContentRequest(updatedContent.id, {
+        status: updatedContent.status,
+        published_url: updatedContent.publishedUrl.trim() || null,
+      }, 'PATCH')
+    } else {
+      await updateContentRequest(updatedContent.id, mapContentToApi(updatedContent))
+    }
     await refreshWorkspace()
     showNotice('Content changes saved successfully.')
   }
@@ -172,6 +202,7 @@ function App() {
       likes_count: Number(metrics.likes),
       comments_count: Number(metrics.comments),
       shares_count: Number(metrics.shares),
+      recorded_at: metrics.recorded_at,
     })
     await refreshWorkspace()
     showNotice('Metrics snapshot recorded successfully.')
@@ -223,17 +254,20 @@ function App() {
             onViewAll={() => navigateToPage('contents')}
             onAddContent={() => navigateToPage('contents')}
           />
-        ) : page === 'matrix' ? (
+        ) : page === 'matrix' && account.id !== 'editor' ? (
           <MatrixPage contents={contents} />
         ) : (
           <ContentPage
             contents={contents}
             channels={channels}
+            editors={editors}
             role={account.id}
             onAddContent={addContent}
             onUpdateContent={updateContent}
             onDeleteContent={removeContent}
             onSaveMetrics={saveMetricSnapshot}
+            onLoadContent={getContentRequest}
+            onRefresh={refreshWorkspace}
           />
         )}
       </main>

@@ -5,7 +5,7 @@ export const roleLabels = {
 }
 
 export const roleAccess = {
-  creator: 'Manage your ideas, schedule, production stages, publishing, and content analytics.',
-  editor: 'View all Creator content and manage production from Recording through Ready to publish.',
+  creator: 'Manage ideas through Recording, assign an editor, then approve completed work for publication.',
+  editor: 'Work only on content assigned to you: add editing drafts and review notes, then move it to Ready.',
   admin: 'Full access to content management and analytics.',
 }

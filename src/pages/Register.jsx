@@ -2,7 +2,6 @@ import { useState } from 'react'
 
 function Register({ onRegister, onLogin }) {
   const [error, setError] = useState('')
-  const [success, setSuccess] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   async function handleSubmit(event) {
@@ -17,16 +16,16 @@ function Register({ onRegister, onLogin }) {
     }
 
     setError('')
-    setSuccess('')
     setIsSubmitting(true)
     try {
       await onRegister({
         name: formData.get('name').toString().trim(),
         email: formData.get('email').toString().trim().toLowerCase(),
         password,
+        role: formData.get('role').toString(),
       })
-      setSuccess('Your account has been created. Sign in with your new email and password.')
-      form.reset()
+      window.alert('Akun berhasil dibuat. Silakan masuk menggunakan email dan password Anda.')
+      onLogin()
     } catch (requestError) {
       setError(requestError.message)
     } finally {
@@ -50,6 +49,12 @@ function Register({ onRegister, onLogin }) {
           <input id="register-name" name="name" type="text" autoComplete="name" maxLength="100" placeholder="Full name" required />
           <label htmlFor="register-email">Email</label>
           <input id="register-email" name="email" type="email" autoComplete="email" maxLength="191" placeholder="name@email.com" required />
+          <label htmlFor="register-role">Account role</label>
+          <select id="register-role" name="role" defaultValue="creator" required>
+            <option value="creator">Creator</option>
+            <option value="editor">Editor</option>
+          </select>
+          <small className="register-role-hint">Creators manage their content. Editors work on content assigned to them.</small>
           <label htmlFor="register-password">Password</label>
           <input id="register-password" name="password" type="password" autoComplete="new-password" minLength="8" maxLength="72" placeholder="Minimal 8 karakter" required />
           <label htmlFor="register-password-confirmation">Confirm password</label>
@@ -59,7 +64,6 @@ function Register({ onRegister, onLogin }) {
             {isSubmitting ? 'Creating account...' : 'Create account'}
           </button>
           {error && <p className="login-error" role="alert">{error}</p>}
-          {success && <p className="google-login-notice" role="status">{success}</p>}
         </form>
         <p className="auth-switch">Already have an account? <button className="text-button" type="button" onClick={onLogin}>Sign in</button></p>
       </section>

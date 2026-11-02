@@ -25,6 +25,23 @@ function validDate(value) {
   return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
+function dateOnly(value) {
+  if (value == null) return null;
+  if (!(value instanceof Date)) return String(value).slice(0, 10);
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function serializeContent(content) {
+  return {
+    ...content,
+    scheduled_date: dateOnly(content.scheduled_date),
+    published_date: dateOnly(content.published_date),
+  };
+}
+
 function validateContent(body, { creating = false } = {}) {
   const errors = [];
   for (const field of ['description', 'script_draft', 'review_notes']) {
@@ -50,14 +67,24 @@ function respondValidation(res, errors) {
   return false;
 }
 
+async function validateAssignedEditor(editorId) {
+  if (editorId == null || editorId === '') return null;
+  const parsedId = Number(editorId);
+  if (!Number.isSafeInteger(parsedId) || parsedId <= 0) return undefined;
+  const editor = await db('users').where({ id: parsedId, role: 'editor' }).first('id');
+  return editor ? editor.id : undefined;
+}
+
 async function listContents(req, res, next) {
   try {
     const query = applyContentAccess(db('contents'), req.user)
       .join('channels', 'contents.channel_id', 'channels.id')
       .join('users as content_owner', 'contents.user_id', 'content_owner.id')
+      .leftJoin('users as assigned_editor', 'contents.assigned_editor_id', 'assigned_editor.id')
       .select(
         'contents.id', 'contents.channel_id', 'channels.platform', 'channels.handle_name',
-        'content_owner.name as owner_name',
+        'content_owner.name as owner_name', 'contents.assigned_editor_id',
+        'assigned_editor.name as assigned_editor_name',
         'contents.title', 'contents.description', 'contents.script_draft', 'contents.draft_url', 'contents.review_notes',
         'contents.format_type', 'contents.status', 'contents.priority',
         'contents.scheduled_date', 'contents.published_date', 'contents.published_url',
@@ -97,9 +124,11 @@ async function listContents(req, res, next) {
     }
 
     res.json(contents.map((content) => ({
-      ...content,
+      ...serializeContent(content),
       checklists: checklistsByContent.get(content.id) || [],
-      metrics: metricsByContent.get(content.id) || null,
+      metrics: metricsByContent.has(content.id)
+        ? { ...metricsByContent.get(content.id), recorded_at: dateOnly(metricsByContent.get(content.id).recorded_at) }
+        : null,
     })));
   } catch (err) {
     next(err);
@@ -114,7 +143,11 @@ async function getContent(req, res, next) {
       db('content_checklists').where({ content_id: content.id }).orderBy('id'),
       db('content_metrics').where({ content_id: content.id }).orderBy('recorded_at', 'desc').orderBy('id', 'desc'),
     ]);
-    res.json({ ...content, checklists, metrics });
+    res.json({
+      ...serializeContent(content),
+      checklists,
+      metrics: metrics.map((snapshot) => ({ ...snapshot, recorded_at: dateOnly(snapshot.recorded_at) })),
+    });
   } catch (err) {
     next(err);
   }
@@ -124,6 +157,10 @@ async function createContent(req, res, next) {
   try {
     if (req.user.role === 'editor') return res.status(403).json({ message: 'Editors cannot create content ideas' });
     if (respondValidation(res, validateContent(req.body, { creating: true }))) return;
+    const assignedEditorId = await validateAssignedEditor(req.body.assigned_editor_id);
+    if (assignedEditorId === undefined) {
+      return res.status(422).json({ message: 'Choose a valid editor account' });
+    }
     const channelQuery = db('channels').where({ id: req.body.channel_id });
     if (req.user.role !== 'admin') channelQuery.where({ user_id: req.user.id });
     const channel = await channelQuery.first();
@@ -135,14 +172,17 @@ async function createContent(req, res, next) {
       title: req.body.title.trim(),
       description: typeof req.body.description === 'string' ? req.body.description.trim() : null,
       script_draft: typeof req.body.script_draft === 'string' ? req.body.script_draft.trim() : null,
-      draft_url: req.body.draft_url || null,
-      review_notes: typeof req.body.review_notes === 'string' ? req.body.review_notes.trim() : null,
+      draft_url: req.user.role === 'admin' ? req.body.draft_url || null : null,
+      review_notes: req.user.role === 'admin' && typeof req.body.review_notes === 'string'
+        ? req.body.review_notes.trim()
+        : null,
       format_type: req.body.format_type,
       priority: req.body.priority || 'medium',
       scheduled_date: req.body.scheduled_date || null,
+      assigned_editor_id: assignedEditorId,
     });
     const content = await findAccessibleContent(req.user, id);
-    res.status(201).json(content);
+    res.status(201).json(serializeContent(content));
   } catch (err) {
     next(err);
   }
@@ -153,57 +193,113 @@ async function updateContent(req, res, next) {
     const content = await findAccessibleContent(req.user, req.params.id);
     if (!content) return res.status(404).json({ message: 'Content not found' });
     if (content.status === 'published') return res.status(409).json({ message: 'Published content cannot be changed' });
-    if (respondValidation(res, validateContent(req.body))) return;
+    const body = req.method === 'PATCH'
+      ? {
+        channel_id: content.channel_id,
+        title: content.title,
+        description: content.description,
+        script_draft: content.script_draft,
+        format_type: content.format_type,
+        priority: content.priority,
+        status: content.status,
+        scheduled_date: dateOnly(content.scheduled_date),
+        draft_url: content.draft_url,
+        review_notes: content.review_notes,
+        published_url: content.published_url,
+        ...req.body,
+      }
+      : req.body;
+    if (req.user.role === 'editor') {
+      const editableFields = new Set(['status', 'draft_url', 'review_notes']);
+      if (req.method !== 'PATCH' || Object.keys(req.body).some((field) => !editableFields.has(field))) {
+        return res.status(403).json({ message: 'Editors can only update the editing review and workflow status' });
+      }
+      if (content.status === 'ready') {
+        return res.status(409).json({ message: 'Content ready for publishing can only be approved by its creator' });
+      }
+      if (!['recording', 'editing'].includes(content.status)) {
+        return res.status(403).json({ message: 'Editors can only manage assigned content from Recording through Editing' });
+      }
+    }
+    if (req.user.role === 'creator') {
+      if (content.status === 'editing') {
+        return res.status(403).json({ message: 'Creators cannot edit content during Editing & review' });
+      }
+      if (content.status === 'ready') {
+        const approvalFields = new Set(['status', 'published_url']);
+        if (req.method !== 'PATCH' || Object.keys(req.body).some((field) => !approvalFields.has(field))) {
+          return res.status(403).json({ message: 'Creators can only approve ready content for publication' });
+        }
+      }
+    }
+    body.scheduled_date = dateOnly(body.scheduled_date);
+    if (respondValidation(res, validateContent(body))) return;
 
-    const requestedStatus = req.body.status || content.status;
+    let assignedEditorId = content.assigned_editor_id;
+    if (req.user.role !== 'editor' && Object.prototype.hasOwnProperty.call(body, 'assigned_editor_id')) {
+      assignedEditorId = await validateAssignedEditor(body.assigned_editor_id);
+      if (assignedEditorId === undefined) {
+        return res.status(422).json({ message: 'Choose a valid editor account' });
+      }
+    }
+    const requestedStatus = body.status || content.status;
     const currentIndex = STATUSES.indexOf(content.status);
     const nextIndex = STATUSES.indexOf(requestedStatus);
     if (nextIndex < currentIndex) return res.status(422).json({ message: 'Content cannot move to an earlier stage' });
     if (nextIndex > currentIndex + 1) return res.status(422).json({ message: 'Content must progress through each stage in order' });
-    if (req.user.role === 'editor' && (content.status === 'idea' || content.status === 'scripting' || nextIndex < 2)) {
-      return res.status(403).json({ message: 'Editors can only manage content from the Recording stage onward' });
+    if (req.user.role === 'creator' && nextIndex > 2 && requestedStatus !== 'published') {
+      return res.status(403).json({ message: 'Creators can move content only through Recording; an editor must complete Editing & review' });
     }
-    if (req.user.role === 'editor' && nextIndex === 5) return res.status(403).json({ message: 'Editors cannot publish content' });
-    if (requestedStatus === 'published' && !validUrl(req.body.published_url || content.published_url || '')) {
+    if (req.user.role === 'creator' && requestedStatus === 'recording' && !assignedEditorId) {
+      return res.status(422).json({ message: 'Assign an editor before moving content to Recording' });
+    }
+    if (req.user.role === 'editor' && nextIndex > 4) {
+      return res.status(403).json({ message: 'Editors cannot publish content' });
+    }
+    if (requestedStatus === 'published' && !validUrl(body.published_url || content.published_url || '')) {
       return res.status(422).json({ message: 'A valid publication URL is required before publishing content' });
     }
-    if (nextIndex >= 1 && (!req.body.script_draft?.trim() || !req.body.scheduled_date)) {
+    if (nextIndex >= 1 && (!body.script_draft?.trim() || !body.scheduled_date)) {
       return res.status(422).json({ message: 'A script and scheduled date are required before moving content to Scripting' });
     }
-    if (nextIndex >= 3) {
+    if (nextIndex === 3 && currentIndex === 2) {
       const checklistItems = await db('content_checklists').where({ content_id: content.id });
       if (!checklistItems.length || checklistItems.some((item) => !item.is_completed)) {
         return res.status(422).json({ message: 'Complete all production checklist items before moving content to Editing' });
       }
     }
-    if (nextIndex >= 4 && (!validUrl(req.body.draft_url || '') || !req.body.review_notes?.trim())) {
+    if (nextIndex >= 4 && (!validUrl(body.draft_url || '') || !body.review_notes?.trim())) {
       return res.status(422).json({ message: 'A draft link and review notes are required before content is Ready to publish' });
     }
 
-    const channelQuery = db('channels').where({ id: req.body.channel_id });
+    const channelQuery = db('channels').where({ id: body.channel_id });
     if (req.user.role === 'creator') channelQuery.where({ user_id: content.user_id });
-    if (req.user.role === 'editor') channelQuery.where({ user_id: content.user_id });
     const channel = await channelQuery.first();
     if (!channel) return res.status(422).json({ message: 'Channel not found in this account' });
 
     const changes = {
       channel_id: channel.id,
-      title: req.body.title.trim(),
-      description: typeof req.body.description === 'string' ? req.body.description.trim() : null,
-      script_draft: typeof req.body.script_draft === 'string' ? req.body.script_draft.trim() : null,
-      draft_url: req.body.draft_url || null,
-      review_notes: typeof req.body.review_notes === 'string' ? req.body.review_notes.trim() : null,
-      format_type: req.body.format_type,
-      priority: req.body.priority || content.priority,
+      title: body.title.trim(),
+      description: typeof body.description === 'string' ? body.description.trim() : null,
+      script_draft: typeof body.script_draft === 'string' ? body.script_draft.trim() : null,
+      draft_url: req.user.role === 'creator' ? content.draft_url : body.draft_url || null,
+      review_notes: req.user.role === 'creator'
+        ? content.review_notes
+        : typeof body.review_notes === 'string' ? body.review_notes.trim() : null,
+      format_type: body.format_type,
+      priority: body.priority || content.priority,
       status: requestedStatus,
-      scheduled_date: req.body.scheduled_date || null,
-      published_url: req.body.published_url || null,
+      scheduled_date: body.scheduled_date || null,
+      published_url: req.user.role === 'creator' && content.status !== 'ready'
+        ? content.published_url
+        : body.published_url || null,
+      assigned_editor_id: assignedEditorId,
     };
     if (requestedStatus === 'published' && content.status !== 'published') {
       changes.published_date = new Date().toISOString().slice(0, 10);
     }
     await db('contents').where({ id: content.id }).update(changes);
-    res.json(await findAccessibleContent(req.user, content.id));
+    res.json(serializeContent(await findAccessibleContent(req.user, content.id)));
   } catch (err) {
     next(err);
   }
@@ -214,6 +310,9 @@ async function deleteContent(req, res, next) {
     const content = await findAccessibleContent(req.user, req.params.id);
     if (!content) return res.status(404).json({ message: 'Content not found' });
     if (req.user.role === 'editor') return res.status(403).json({ message: 'Editors cannot delete content' });
+    if (req.user.role === 'creator' && content.status === 'editing') {
+      return res.status(403).json({ message: 'Content cannot be deleted while its assigned editor is reviewing it' });
+    }
     if (content.status === 'published') return res.status(409).json({ message: 'Published content cannot be deleted' });
     await db('contents').where({ id: content.id }).delete();
     res.status(204).end();
@@ -227,8 +326,11 @@ async function replaceChecklists(req, res, next) {
     const content = await findAccessibleContent(req.user, req.params.id);
     if (!content) return res.status(404).json({ message: 'Content not found' });
     if (content.status === 'published') return res.status(409).json({ message: 'The checklist for published content cannot be changed' });
-    if (req.user.role === 'editor' && !['recording', 'editing', 'ready'].includes(content.status)) {
-      return res.status(403).json({ message: 'Editors can only manage checklists during production' });
+    if (req.user.role === 'editor') {
+      return res.status(403).json({ message: 'Only the creator can manage the production checklist' });
+    }
+    if (req.user.role === 'creator' && !['idea', 'scripting', 'recording'].includes(content.status)) {
+      return res.status(403).json({ message: 'Creators can manage checklists only through Recording' });
     }
     if (!Array.isArray(req.body.items) || req.body.items.length > 100) {
       return res.status(422).json({ message: 'The checklist must be a list of no more than 100 tasks' });
@@ -256,6 +358,9 @@ async function replaceChecklists(req, res, next) {
 
 async function createMetricSnapshot(req, res, next) {
   try {
+    if (req.user.role === 'editor') {
+      return res.status(403).json({ message: 'Editors cannot record publication metrics' });
+    }
     const content = await findAccessibleContent(req.user, req.params.id);
     if (!content) return res.status(404).json({ message: 'Content not found' });
     if (content.status !== 'published') return res.status(409).json({ message: 'Metrics can only be recorded for published content' });
@@ -270,7 +375,8 @@ async function createMetricSnapshot(req, res, next) {
     const recordedAt = req.body.recorded_at || new Date().toISOString().slice(0, 10);
     if (!validDate(recordedAt)) return res.status(422).json({ message: 'Metric recording date is invalid' });
     const [id] = await db('content_metrics').insert({ content_id: content.id, recorded_at: recordedAt, ...values });
-    res.status(201).json(await db('content_metrics').where({ id }).first());
+    const snapshot = await db('content_metrics').where({ id }).first();
+    res.status(201).json({ ...snapshot, recorded_at: dateOnly(snapshot.recorded_at) });
   } catch (err) {
     next(err);
   }

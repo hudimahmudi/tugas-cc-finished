@@ -33,7 +33,7 @@ function Navbar({ activePage, onNavigate, onLogout, onAddChannel, channels, cont
         </Link>
 
         <nav className="app-navbar-nav" aria-label="Main menu">
-          {menuItems.map(({ id, icon: Icon, label }) => (
+          {menuItems.filter(({ id }) => account.id !== 'editor' || id !== 'matrix').map(({ id, icon: Icon, label }) => (
             <button
               className={`app-navbar-link ${activePage === id ? 'active' : ''}`}
               key={id}

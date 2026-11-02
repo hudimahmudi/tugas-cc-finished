@@ -6,7 +6,7 @@ const PLATFORMS = ['youtube', 'tiktok', 'instagram', 'linkedin'];
 async function listChannels(req, res, next) {
   try {
     const channels = await applyChannelAccess(db('channels'), req.user)
-      .select('id', 'platform', 'handle_name', 'created_at')
+      .distinct('channels.id', 'channels.platform', 'channels.handle_name', 'channels.created_at')
       .orderBy('id');
 
     res.json(channels);

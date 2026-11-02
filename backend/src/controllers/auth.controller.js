@@ -15,6 +15,7 @@ function publicUser(user) {
 async function register(req, res, next) {
   try {
     const { name, email, password } = req.body;
+    const role = req.body.role === undefined ? 'creator' : req.body.role;
 
     if (typeof name !== 'string' || typeof email !== 'string' || typeof password !== 'string') {
       return res.status(422).json({ message: 'Name, email, and password are required' });
@@ -30,10 +31,13 @@ async function register(req, res, next) {
     if (password.length < 8 || password.length > 72) {
       return res.status(422).json({ message: 'Password must be at least 8 characters long' });
     }
+    if (!['creator', 'editor'].includes(role)) {
+      return res.status(422).json({ message: 'Role must be creator or editor' });
+    }
 
     const existing = await db('users').where({ email: normalizedEmail }).first();
     if (existing) {
-      return res.status(422).json({ message: 'This email is already in use' });
+      return res.status(422).json({ message: 'Email already taken' });
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
@@ -41,14 +45,14 @@ async function register(req, res, next) {
       name: normalizedName,
       email: normalizedEmail,
       password_hash: passwordHash,
-      role: 'creator',
+      role,
     });
 
     const user = await db('users').where({ id }).first();
     res.status(201).json(publicUser(user));
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') {
-      return res.status(422).json({ message: 'This email is already in use' });
+      return res.status(422).json({ message: 'Email already taken' });
     }
     next(err);
   }

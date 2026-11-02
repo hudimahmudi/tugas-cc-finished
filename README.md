@@ -43,7 +43,7 @@ Opsional, isi data demo:
 npm run seed
 ```
 
-Seeder mempertahankan data yang sudah ada dan hanya menambahkan akun, channel, atau konten demo yang belum tersedia. Akun demo: `creator@example.com` dengan password `password123`.
+Seeder mempertahankan data yang sudah ada, menambahkan akun/channel/konten demo yang belum tersedia, dan melengkapi penugasan serta detail yang masih kosong pada konten demo. Akun demo: Creator `creator@example.com` dan Editor `editor@example.com`, keduanya dengan password `password123`. Pendaftaran publik mendukung role Creator dan Editor; role Admin hanya dapat diberikan oleh administrator.
 
 ### 2. Jalankan backend
 
@@ -77,10 +77,12 @@ npm run build
 
 ## Alur utama
 
-- Daftar akun Creator atau masuk dengan akun yang tersimpan di database.
+- Daftar akun Creator atau Editor, atau masuk dengan akun yang tersimpan di database.
 - Tambahkan channel sosial sebelum membuat konten.
-- Buat ide, lalu lanjutkan tahap secara berurutan: scripting, recording, editing, ready, published.
+- Creator mengelola ide, scripting, recording, dan checklist produksi; Creator menetapkan Editor sebelum konten masuk tahap Recording.
+- Editor hanya melihat konten yang ditugaskan kepadanya, mengerjakan editing & review, lalu mengirim konten ke Ready.
+- Creator memeriksa konten Ready dan menyetujui publikasi dengan memasukkan URL publik yang valid.
 - Konten tidak dapat dipublikasikan tanpa URL HTTP/HTTPS yang valid.
-- Catat snapshot metrik untuk konten yang sudah tayang. Konten tayang tidak dapat diubah atau dihapus.
+- Catat snapshot metrik bertanggal untuk konten yang sudah tayang dan lihat riwayat snapshotnya. Konten tayang tidak dapat diubah atau dihapus.
 - Admin dapat melihat konten dan channel seluruh pengguna; Creator hanya melihat data miliknya sendiri.
-- Editor dapat melihat seluruh konten milik para Creator (termasuk ide dan publikasi), tetapi hanya mengelola tahap produksi. Editor tidak melihat konten milik Admin atau Editor lain.
+- Editor hanya dapat melihat konten Creator yang ditugaskan kepadanya. Editor tidak dapat mengubah brief, checklist, konten yang ditugaskan ke editor lain, atau menerbitkan konten.
