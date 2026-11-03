@@ -21,6 +21,7 @@ import {
 } from './api.js'
 import { mapContentFromApi, mapContentToApi } from './contentWorkflow.js'
 import { roleAccess, roleLabels } from './roles.js'
+import Swal from 'sweetalert2'
 
 const pageRoutes = {
   '/login': 'login',
@@ -48,7 +49,11 @@ function readStoredUser() {
 }
 
 function checklistPayload(items = []) {
-  return items.map(({ task, completed }) => ({ task_name: task, is_completed: completed }))
+  return items.map(({ id, task, completed }) => ({
+    ...(id == null ? {} : { id }),
+    task_name: task,
+    is_completed: completed,
+  }))
 }
 
 function App() {
@@ -147,7 +152,18 @@ function App() {
     navigate('/dashboard', { replace: true })
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    const result = await Swal.fire({
+      icon: 'warning',
+      title: 'Sign out?',
+      text: 'Are you sure you want to sign out?',
+      showCancelButton: true,
+      confirmButtonText: 'Sign out',
+      cancelButtonText: 'Stay signed in',
+      reverseButtons: true,
+    })
+    if (!result.isConfirmed) return
+
     localStorage.removeItem('creator-session-token')
     localStorage.removeItem('creator-session-user')
     setUser(null)
@@ -169,19 +185,31 @@ function App() {
 
   async function updateContent(updatedContent) {
     const originalContent = contents.find((content) => content.id === updatedContent.id)
-    if (user.role !== 'editor' && updatedContent.status !== 'published') {
+    const canUpdateChecklist = user.role === 'admin'
+      || (user.role === 'creator' && ['idea', 'scripting'].includes(originalContent?.status))
+      || (user.role === 'editor' && ['recording', 'editing'].includes(originalContent?.status))
+    if (canUpdateChecklist && updatedContent.status !== 'published') {
       await replaceChecklists(updatedContent.id, checklistPayload(updatedContent.productionChecklist))
     }
     if (user.role === 'editor') {
-      await updateContentRequest(updatedContent.id, {
-        status: updatedContent.status,
-        draft_url: updatedContent.draftUrl.trim() || null,
-        review_notes: updatedContent.reviewNotes.trim() || null,
-      }, 'PATCH')
+      if (originalContent?.status === 'ready') {
+        await updateContentRequest(updatedContent.id, {
+          published_url: updatedContent.publishedUrl.trim(),
+        }, 'PATCH')
+      } else {
+        await updateContentRequest(updatedContent.id, {
+          status: updatedContent.status,
+          draft_url: updatedContent.draftUrl.trim() || null,
+          review_notes: updatedContent.reviewNotes.trim() || null,
+        }, 'PATCH')
+      }
     } else if (user.role === 'creator' && originalContent?.status === 'ready') {
       await updateContentRequest(updatedContent.id, {
         status: updatedContent.status,
         published_url: updatedContent.publishedUrl.trim() || null,
+        ...(updatedContent.creatorReviewNotes.trim()
+          ? { creator_review_notes: updatedContent.creatorReviewNotes.trim() }
+          : {}),
       }, 'PATCH')
     } else {
       await updateContentRequest(updatedContent.id, mapContentToApi(updatedContent))

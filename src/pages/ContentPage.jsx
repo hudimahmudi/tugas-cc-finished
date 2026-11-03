@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { CalendarDays, Check, ChevronDown, ExternalLink, Filter, MoreHorizontal, Pencil, Plus, RefreshCw, Search, SlidersHorizontal, Trash2 } from 'lucide-react'
+import Swal from 'sweetalert2'
 import { contentStatuses, formatScheduledDate } from '../contentWorkflow.js'
 
 const columns = [
@@ -36,6 +37,7 @@ function createDraft(content = {}, channels = []) {
     productionChecklist: content.productionChecklist || [],
     draftUrl: content.draftUrl || '',
     reviewNotes: content.reviewNotes || '',
+    creatorReviewNotes: content.creatorReviewNotes || '',
     publishedUrl: content.publishedUrl || '',
     assignedEditorId: content.assignedEditorId || '',
   }
@@ -82,19 +84,23 @@ function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateC
   const canCreate = !isEditor
   const sourceContent = contents.find((content) => content.id === activeDraft?.id)
   const sourceStageIndex = isNewContent ? 0 : contentStatuses.findIndex((item) => item.value === sourceContent?.status)
-  const canEditDetails = isAdmin || (isCreator && sourceStageIndex <= 2)
-  const canEditChecklist = isAdmin || (isCreator && sourceStageIndex <= 2)
+  const creatorProgressReadOnly = isCreator && [2, 3].includes(sourceStageIndex)
+  const canEditDetails = isAdmin || (isCreator && sourceStageIndex <= 1)
+  const canManageChecklist = isAdmin || (isCreator && sourceStageIndex <= 1)
+  const canCompleteChecklist = canManageChecklist || (isEditor && [2, 3].includes(sourceStageIndex))
   const canEditReview = isAdmin || (isEditor && [2, 3].includes(sourceStageIndex))
-  const canEditAssignment = isAdmin || (isCreator && sourceStageIndex <= 2)
+  const canEditPublishedUrl = isAdmin || (sourceStageIndex === 4 && (isCreator || isEditor))
+  const canEditAssignment = isAdmin || (isCreator && sourceStageIndex <= 1)
   const canEditStatus = isAdmin
-    || (isCreator && (sourceStageIndex <= 2 || sourceStageIndex === 4))
+    || (isCreator && (sourceStageIndex <= 1 || sourceStageIndex === 4))
     || (isEditor && [2, 3].includes(sourceStageIndex))
   const selectableStatuses = contentStatuses.filter((status, index) => {
     if (isEditor) {
-      const nextEditorStage = sourceStageIndex === 2 ? 3 : sourceStageIndex === 3 ? 4 : sourceStageIndex
-      return index === sourceStageIndex || index === nextEditorStage
+      if (sourceStageIndex === 4) return index === 4
+      return [2, 3].includes(sourceStageIndex) && [2, 3].includes(index)
     }
-    if (isCreator && sourceStageIndex === 4) return index === 4 || index === 5
+    if (isCreator && sourceStageIndex === 4) return index <= 4 || index === 5
+    if (isAdmin) return true
     const lastCreatorStage = isCreator ? 2 : 5
     return index >= sourceStageIndex && index <= Math.min(sourceStageIndex + 1, lastCreatorStage)
   })
@@ -128,8 +134,7 @@ function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateC
 
   function openEditForm(content) {
     if (content.status === 'published') return
-    if (isCreator && content.status === 'editing') return
-    if (isEditor && !['recording', 'editing'].includes(content.status)) return
+    if (isEditor && !['recording', 'editing', 'ready'].includes(content.status)) return
     setFormError('')
     setNewChecklistTask('')
     setActiveDraft(createDraft(content, channels))
@@ -169,6 +174,8 @@ function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateC
     const originalContent = contents.find((content) => content.id === activeDraft.id)
     const currentIndex = isNewContent ? 0 : contentStatuses.findIndex((item) => item.value === originalContent?.status)
 
+    if (isCreator && [2, 3].includes(currentIndex)) return
+
     if (!activeDraft.title.trim()) {
       setFormError('A content title is required.')
       return
@@ -177,8 +184,14 @@ function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateC
       setFormError('Select a connected channel first.')
       return
     }
-    if (!isNewContent && targetIndex < currentIndex) {
-      setFormError('A content item cannot move to an earlier stage.')
+    if ((isCreator || isAdmin) && sourceStageIndex <= 1 && !activeDraft.assignedEditorId) {
+      setFormError('Assign an editor before saving this content.')
+      return
+    }
+    const isCreatorRollback = isCreator && currentIndex === 4 && targetIndex < 4
+    const isEditorRollback = isEditor && [2, 3].includes(currentIndex) && [2, 3].includes(targetIndex)
+    if (!isNewContent && targetIndex < currentIndex && !isAdmin && !isCreatorRollback && !isEditorRollback) {
+      setFormError('You cannot move this content back to that stage.')
       return
     }
     if (targetIndex > currentIndex + 1) {
@@ -193,12 +206,16 @@ function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateC
       setFormError('Assign an editor before moving content to Recording.')
       return
     }
-    if (isEditor && ![2, 3].includes(currentIndex)) {
+    if (isEditor && ![2, 3].includes(currentIndex) && !(currentIndex === 4 && targetIndex === 4)) {
       setFormError('Editors can only update assigned content during Recording and Editing & review.')
       return
     }
     if (isEditor && targetIndex > 4) {
       setFormError('Only the creator can approve content for publication.')
+      return
+    }
+    if (isEditor && currentIndex === 4 && !isValidHttpUrl(activeDraft.publishedUrl)) {
+      setFormError('Add a valid HTTP or HTTPS publication URL for the creator to review.')
       return
     }
     if (targetIndex >= 1 && (!activeDraft.script.trim() || !activeDraft.scheduledDate)) {
@@ -212,12 +229,17 @@ function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateC
     }
     if (isEditor && targetIndex === 3 && targetIndex > currentIndex
       && (!activeDraft.productionChecklist.length || activeDraft.productionChecklist.some((item) => !item.completed))) {
-      setFormError('The creator must complete every production checklist item before editing can begin.')
+      setFormError('Complete every production checklist item before editing can begin.')
       return
     }
     if (isEditor && targetIndex === 4
       && (!isValidHttpUrl(activeDraft.draftUrl) || !activeDraft.reviewNotes.trim())) {
       setFormError('Add a valid draft link and review notes before moving content to Ready.')
+      return
+    }
+    if (isCreator && currentIndex === 4 && targetIndex === 4
+      && !activeDraft.creatorReviewNotes.trim()) {
+      setFormError('Add creator review notes before saving your feedback.')
       return
     }
     if (!isEditor && targetIndex >= 4 && targetIndex > currentIndex
@@ -227,10 +249,6 @@ function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateC
     }
     if (activeDraft.draftUrl && !isValidHttpUrl(activeDraft.draftUrl)) {
       setFormError('The draft link must be a valid HTTP or HTTPS URL.')
-      return
-    }
-    if (isCreator && currentIndex === 4 && targetIndex !== 5) {
-      setFormError('Review the editor submission and publish it to approve the content.')
       return
     }
     if (targetIndex === 5 && !isValidHttpUrl(activeDraft.publishedUrl)) {
@@ -252,7 +270,18 @@ function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateC
   }
 
   async function handleDelete(content) {
-    if (!window.confirm(`Delete "${content.title}"? Its checklist and metrics will also be deleted.`)) return
+    const result = await Swal.fire({
+      icon: 'warning',
+      title: 'Delete content?',
+      text: `Delete "${content.title}"? Its checklist and metrics will also be deleted.`,
+      showCancelButton: true,
+      confirmButtonText: 'Delete',
+      cancelButtonText: 'Cancel',
+      confirmButtonColor: '#dc3545',
+      reverseButtons: true,
+    })
+    if (!result.isConfirmed) return
+
     try {
       await onDeleteContent(content.id)
       if (activeDraft?.id === content.id) setActiveDraft(null)
@@ -358,8 +387,8 @@ function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateC
                 {columnContents.map((content, index) => {
                   const stage = contentStatuses.find((item) => item.value === content.status) || contentStatuses[0]
                   const canManageContent = isAdmin
-                    || (isCreator && !['editing', 'published'].includes(content.status))
-                    || (isEditor && ['recording', 'editing'].includes(content.status))
+                    || (isCreator && content.status !== 'published')
+                    || (isEditor && ['recording', 'editing', 'ready'].includes(content.status))
                   return (
                     <article className={`kanban-card kanban-card-tone-${(Number(content.id) + index) % 4}`} key={content.id}>
                       <div className="kanban-card-topline">
@@ -384,14 +413,14 @@ function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateC
                         <button className="kanban-edit-button" type="button" onClick={() => openMetricForm(content)}>Record metrics</button>
                       )}
                       {content.status === 'published' && <span className="kanban-locked-label">Details are locked after publishing</span>}
-                      {content.status === 'editing' && isCreator && <span className="kanban-locked-label">Editing & review is assigned to {content.assignedEditorName || 'your editor'}.</span>}
+                      {['recording', 'editing'].includes(content.status) && isCreator && <span className="kanban-locked-label">View-only: review the checklist and progress from {content.assignedEditorName || 'your editor'}.</span>}
                       {content.status === 'ready' && isCreator && <span className="kanban-locked-label">Ready for your approval before publication.</span>}
                       {content.status !== 'published' && (
                         <div className="kanban-card-actions">
                           {canManageContent && <button className="kanban-edit-button" type="button" onClick={() => openEditForm(content)}>
-                            {isEditor ? <><Pencil size={12} /> {content.status === 'recording' ? 'Start editing' : 'Review draft'}</> : content.status === 'ready' && isCreator ? 'Review & publish' : <><Pencil size={12} /> Manage content</>}
+                            {isEditor ? <><Pencil size={12} /> {content.status === 'recording' ? 'Start editing' : content.status === 'ready' ? 'Add publication URL' : 'Review draft'}</> : isCreator && ['recording', 'editing'].includes(content.status) ? 'View editor progress' : content.status === 'ready' && isCreator ? 'Review & publish' : <><Pencil size={12} /> Manage content</>}
                           </button>}
-                          {(isAdmin || (isCreator && content.status !== 'editing')) && <button className="kanban-edit-button" type="button" onClick={() => handleDelete(content)} aria-label={`Delete ${content.title}`}><Trash2 size={12} /> Delete</button>}
+                          {(isAdmin || (isCreator && !['recording', 'editing'].includes(content.status))) && <button className="kanban-edit-button" type="button" onClick={() => handleDelete(content)} aria-label={`Delete ${content.title}`}><Trash2 size={12} /> Delete</button>}
                         </div>
                       )}
                     </article>
@@ -410,7 +439,7 @@ function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateC
         <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !isSaving) setActiveDraft(null) }}>
           <section className="content-modal workflow-modal" role="dialog" aria-modal="true" aria-labelledby="form-title">
             <div className="modal-heading">
-              <div><span className="modal-kicker">{isNewContent ? 'NEW IDEA' : isEditor ? 'ASSIGNED EDITING TASK' : 'CONTENT WORKFLOW'}</span><h2 id="form-title">{isNewContent ? 'Add content' : isEditor ? 'Editing & review' : 'Manage content'}</h2><p>{isNewContent ? 'Add a content idea to start the production workflow.' : isEditor ? 'Prepare the draft and submit it for creator approval.' : isCreator && sourceStageIndex === 4 ? 'Review the editor submission and publish when approved.' : 'Update the details and move content to the next stage.'}</p></div>
+              <div><span className="modal-kicker">{isNewContent ? 'NEW IDEA' : isEditor ? 'ASSIGNED EDITING TASK' : creatorProgressReadOnly ? 'EDITOR PROGRESS' : 'CONTENT WORKFLOW'}</span><h2 id="form-title">{isNewContent ? 'Add content' : isEditor ? 'Editing & review' : creatorProgressReadOnly ? 'View editor progress' : 'Manage content'}</h2><p>{isNewContent ? 'Add a content idea to start the production workflow.' : isEditor ? 'Prepare the draft and submit it for creator approval.' : creatorProgressReadOnly ? 'Review the editor’s checklist and progress. This content is read-only during Recording and Editing & review.' : isCreator && sourceStageIndex === 4 ? 'Review the editor submission and publish when approved.' : 'Update the details and move content to the next stage.'}</p></div>
               <button type="button" className="modal-close" onClick={() => setActiveDraft(null)} aria-label="Close" disabled={isSaving}>×</button>
             </div>
             <div className="workflow-stepper" aria-label="Content stages">
@@ -442,7 +471,7 @@ function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateC
               {(isCreator || isAdmin) && (
                 <section className="workflow-stage-section">
                   <label htmlFor="content-editor">Assigned editor</label>
-                  <select id="content-editor" value={activeDraft.assignedEditorId} onChange={(event) => updateDraft('assignedEditorId', event.target.value)} disabled={!canEditAssignment}>
+                  <select id="content-editor" value={activeDraft.assignedEditorId} onChange={(event) => updateDraft('assignedEditorId', event.target.value)} disabled={!canEditAssignment} required={canEditAssignment}>
                     <option value="">Not assigned</option>
                     {editors.map((editor) => <option key={editor.id} value={editor.id}>{editor.name} · {editor.email}</option>)}
                   </select>
@@ -465,16 +494,16 @@ function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateC
 
               {draftStageIndex >= 2 && (
                 <section className="workflow-stage-section">
-                  <div className="workflow-section-heading"><strong>Production checklist</strong><span>{canEditChecklist ? 'Add tasks and mark them complete' : 'Creator-managed production tasks'}</span></div>
+                  <div className="workflow-section-heading"><strong>Production checklist</strong><span>{canManageChecklist ? 'Add tasks and mark them complete' : isEditor ? 'Mark assigned production tasks complete' : 'Creator-managed production tasks'}</span></div>
                   <div className="production-checklist">
                     {activeDraft.productionChecklist.map((item, index) => (
                       <label key={item.id || `new-${index}`}>
-                        <input type="checkbox" checked={item.completed} onChange={(event) => updateChecklistItem(index, 'completed', event.target.checked)} disabled={!canEditChecklist} />
-                        <input type="text" aria-label={`Production task ${index + 1}`} value={item.task} maxLength="255" onChange={(event) => updateChecklistItem(index, 'task', event.target.value)} disabled={!canEditChecklist} />
-                        {canEditChecklist && <button type="button" className="button-outline" onClick={() => setActiveDraft((current) => ({ ...current, productionChecklist: current.productionChecklist.filter((_, itemIndex) => itemIndex !== index) }))} aria-label={`Delete task ${item.task}`}>×</button>}
+                        <input type="checkbox" checked={item.completed} onChange={(event) => updateChecklistItem(index, 'completed', event.target.checked)} disabled={!canCompleteChecklist} />
+                        <input type="text" aria-label={`Production task ${index + 1}`} value={item.task} maxLength="255" onChange={(event) => updateChecklistItem(index, 'task', event.target.value)} disabled={!canManageChecklist} />
+                        {canManageChecklist && <button type="button" className="button-outline" onClick={() => setActiveDraft((current) => ({ ...current, productionChecklist: current.productionChecklist.filter((_, itemIndex) => itemIndex !== index) }))} aria-label={`Delete task ${item.task}`}>×</button>}
                       </label>
                     ))}
-                    {canEditChecklist && (
+                    {canManageChecklist && (
                       <div className="production-checklist-add">
                         <input aria-label="New task name" value={newChecklistTask} onChange={(event) => setNewChecklistTask(event.target.value)} maxLength="255" placeholder="Enter a production task..." />
                         <button type="button" className="button-outline" onClick={addChecklistItem}><Plus size={13} /> Add</button>
@@ -486,26 +515,43 @@ function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateC
 
               {(draftStageIndex >= 3 || isEditor) && (
                 <section className="workflow-stage-section">
-                  <div className="workflow-section-heading"><strong>Editing & review</strong><span>{isEditor ? 'Prepare the draft and submit it for creator approval' : 'Editor-submitted draft and review notes'}</span></div>
+                  <div className="workflow-section-heading"><strong>Editing & review</strong><span>{isEditor ? 'Prepare the draft and submit it for creator approval' : isCreator && sourceStageIndex === 4 ? 'Review the editor draft and add feedback' : 'Editor-submitted draft and review notes'}</span></div>
                   <label htmlFor="content-draft-url">Draft link</label>
                   <input id="content-draft-url" type="url" value={activeDraft.draftUrl} onChange={(event) => updateDraft('draftUrl', event.target.value)} placeholder="https://..." disabled={!canEditReview} />
-                  <label htmlFor="content-review-notes">Review notes</label>
-                  <textarea id="content-review-notes" value={activeDraft.reviewNotes} onChange={(event) => updateDraft('reviewNotes', event.target.value)} placeholder="Record the review results or required revisions..." rows="3" disabled={!canEditReview} />
+                  {activeDraft.draftUrl && isValidHttpUrl(activeDraft.draftUrl) && <a className="kanban-published-link" href={activeDraft.draftUrl} target="_blank" rel="noreferrer"><ExternalLink size={11} /> Open editor draft</a>}
+                  <label htmlFor="content-review-notes">Editor review notes</label>
+                  <textarea id="content-review-notes" value={activeDraft.reviewNotes} onChange={(event) => updateDraft('reviewNotes', event.target.value)} placeholder="Editor notes on the draft..." rows="3" disabled={!canEditReview} />
+                  {(isCreator && sourceStageIndex === 4) || (isEditor && [2, 3, 4].includes(sourceStageIndex)) || (isAdmin && sourceStageIndex >= 2) ? (
+                    <>
+                      <label htmlFor="creator-review-notes">Creator review notes</label>
+                      <textarea
+                        id="creator-review-notes"
+                        value={activeDraft.creatorReviewNotes}
+                        onChange={(event) => updateDraft('creatorReviewNotes', event.target.value)}
+                        placeholder={isCreator ? 'Evaluate the edited video and describe any changes needed...' : 'The creator has not left review notes yet.'}
+                        rows="3"
+                        maxLength="2000"
+                        aria-describedby="creator-review-notes-hint"
+                        disabled={!isCreator || sourceStageIndex !== 4}
+                      />
+                      <small id="creator-review-notes-hint">Up to 2000 characters. Visible to the assigned editor.</small>
+                    </>
+                  ) : null}
                 </section>
               )}
 
-              {(draftStageIndex >= 5 || ((isCreator || isAdmin) && draftStageIndex === 4)) && (
+              {(draftStageIndex >= 5 || ((isCreator || isEditor || isAdmin) && draftStageIndex === 4)) && (
                 <section className="workflow-stage-section">
-                  <div className="workflow-section-heading"><strong>Creator approval & publishing</strong><span>Verify the Ready submission and provide its public URL</span></div>
+                  <div className="workflow-section-heading"><strong>{isEditor ? 'Publication URL' : 'Creator approval & publishing'}</strong><span>{isEditor ? 'Add the URL for the creator to review; only the creator can publish' : 'Verify the Ready submission and provide its public URL'}</span></div>
                   <label htmlFor="content-published-url">Published content URL</label>
-                  <input id="content-published-url" type="url" value={activeDraft.publishedUrl} onChange={(event) => updateDraft('publishedUrl', event.target.value)} placeholder="https://..." required disabled={!canEditStatus || sourceStageIndex === 5} />
+                  <input id="content-published-url" type="url" value={activeDraft.publishedUrl} onChange={(event) => updateDraft('publishedUrl', event.target.value)} placeholder="https://..." required={(isEditor && sourceStageIndex === 4) || activeDraft.status === 'published'} disabled={!canEditPublishedUrl || sourceStageIndex === 5} />
                 </section>
               )}
               {formError && <p className="workflow-form-error" role="alert">{formError}</p>}
               <div className="modal-actions">
-                {!isNewContent && (isAdmin || isCreator) && <button type="button" className="button-outline" onClick={() => handleDelete(activeDraft)} disabled={isSaving}><Trash2 size={14} /> Delete content</button>}
+                {!isNewContent && (isAdmin || (isCreator && !creatorProgressReadOnly)) && <button type="button" className="button-outline" onClick={() => handleDelete(activeDraft)} disabled={isSaving}><Trash2 size={14} /> Delete content</button>}
                 <button type="button" className="button-outline" onClick={() => setActiveDraft(null)} disabled={isSaving}>Cancel</button>
-                {canEditStatus && <button className="button-primary" type="submit" disabled={isSaving}>{isSaving ? 'Saving...' : isNewContent ? 'Save idea' : isCreator && sourceStageIndex === 4 ? 'Approve & publish' : isEditor && activeDraft.status === 'ready' ? 'Submit for approval' : 'Save changes'}</button>}
+                {(canEditStatus || (isEditor && sourceStageIndex === 4)) && !creatorProgressReadOnly && <button className="button-primary" type="submit" disabled={isSaving}>{isSaving ? 'Saving...' : isNewContent ? 'Save idea' : isCreator && sourceStageIndex === 4 && activeDraft.status === 'ready' ? 'Save review notes' : isCreator && sourceStageIndex === 4 ? 'Approve & publish' : isEditor && sourceStageIndex === 4 ? 'Save publication URL' : isEditor && activeDraft.status === 'ready' ? 'Submit for approval' : 'Save changes'}</button>}
               </div>
             </form>
           </section>

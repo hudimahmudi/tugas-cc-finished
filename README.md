@@ -79,10 +79,12 @@ npm run build
 
 - Daftar akun Creator atau Editor, atau masuk dengan akun yang tersimpan di database.
 - Tambahkan channel sosial sebelum membuat konten.
-- Creator mengelola ide, scripting, recording, dan checklist produksi; Creator menetapkan Editor sebelum konten masuk tahap Recording.
+- Creator mengelola ide, scripting, dan checklist produksi sebelum Recording; setelah itu Creator hanya dapat melihat progres dan checklist Editor selama Recording dan Editing & review.
 - Editor hanya melihat konten yang ditugaskan kepadanya, mengerjakan editing & review, lalu mengirim konten ke Ready.
+- Creator dapat menyimpan review notes untuk menilai hasil edit dan menyampaikan revisi; Editor yang ditugaskan dapat melihat catatan tersebut pada konten Ready.
+- Creator dapat mengembalikan konten Ready ke tahap sebelumnya untuk revisi; Editor dapat mengembalikan Editing ke Recording. Admin dapat mengatur tahap workflow. Konten Published terkunci dan tidak dapat diubah atau dikembalikan ke tahap sebelumnya.
 - Creator memeriksa konten Ready dan menyetujui publikasi dengan memasukkan URL publik yang valid.
 - Konten tidak dapat dipublikasikan tanpa URL HTTP/HTTPS yang valid.
 - Catat snapshot metrik bertanggal untuk konten yang sudah tayang dan lihat riwayat snapshotnya. Konten tayang tidak dapat diubah atau dihapus.
 - Admin dapat melihat konten dan channel seluruh pengguna; Creator hanya melihat data miliknya sendiri.
-- Editor hanya dapat melihat konten Creator yang ditugaskan kepadanya. Editor tidak dapat mengubah brief, checklist, konten yang ditugaskan ke editor lain, atau menerbitkan konten.
+- Editor hanya dapat melihat konten Creator yang ditugaskan kepadanya. Editor dapat menandai checklist Creator selesai selama Recording dan Editing & review, tetapi tidak dapat mengubah brief atau nama tugas checklist, mengakses konten yang ditugaskan ke editor lain, atau menerbitkan konten.

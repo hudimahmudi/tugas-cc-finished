@@ -44,8 +44,11 @@ function serializeContent(content) {
 
 function validateContent(body, { creating = false } = {}) {
   const errors = [];
-  for (const field of ['description', 'script_draft', 'review_notes']) {
+  for (const field of ['description', 'script_draft', 'review_notes', 'creator_review_notes']) {
     if (body[field] != null && typeof body[field] !== 'string') errors.push(`${field} must be a string`);
+  }
+  if (typeof body.creator_review_notes === 'string' && body.creator_review_notes.length > 2000) {
+    errors.push('Creator review notes must be 2000 characters or fewer');
   }
   if (typeof body.title !== 'string' || !body.title.trim()) errors.push('Content title is required');
   else if (body.title.trim().length > 255) errors.push('Content title must be 255 characters or fewer');
@@ -86,6 +89,7 @@ async function listContents(req, res, next) {
         'content_owner.name as owner_name', 'contents.assigned_editor_id',
         'assigned_editor.name as assigned_editor_name',
         'contents.title', 'contents.description', 'contents.script_draft', 'contents.draft_url', 'contents.review_notes',
+        'contents.creator_review_notes',
         'contents.format_type', 'contents.status', 'contents.priority',
         'contents.scheduled_date', 'contents.published_date', 'contents.published_url',
         'contents.created_at', 'contents.updated_at',
@@ -157,6 +161,9 @@ async function createContent(req, res, next) {
   try {
     if (req.user.role === 'editor') return res.status(403).json({ message: 'Editors cannot create content ideas' });
     if (respondValidation(res, validateContent(req.body, { creating: true }))) return;
+    if (req.body.assigned_editor_id == null || req.body.assigned_editor_id === '') {
+      return res.status(422).json({ message: 'Assign an editor before saving this content' });
+    }
     const assignedEditorId = await validateAssignedEditor(req.body.assigned_editor_id);
     if (assignedEditorId === undefined) {
       return res.status(422).json({ message: 'Choose a valid editor account' });
@@ -205,30 +212,40 @@ async function updateContent(req, res, next) {
         scheduled_date: dateOnly(content.scheduled_date),
         draft_url: content.draft_url,
         review_notes: content.review_notes,
+        creator_review_notes: content.creator_review_notes,
         published_url: content.published_url,
         ...req.body,
       }
       : req.body;
     if (req.user.role === 'editor') {
-      const editableFields = new Set(['status', 'draft_url', 'review_notes']);
+      const editableFields = content.status === 'ready'
+        ? new Set(['published_url'])
+        : new Set(['status', 'draft_url', 'review_notes']);
       if (req.method !== 'PATCH' || Object.keys(req.body).some((field) => !editableFields.has(field))) {
-        return res.status(403).json({ message: 'Editors can only update the editing review and workflow status' });
+        return res.status(403).json({ message: content.status === 'ready'
+          ? 'Editors can only add the publication URL for creator approval'
+          : 'Editors can only update the editing review and workflow status' });
       }
       if (content.status === 'ready') {
-        return res.status(409).json({ message: 'Content ready for publishing can only be approved by its creator' });
-      }
-      if (!['recording', 'editing'].includes(content.status)) {
+        if (!validUrl(req.body.published_url)) {
+          return res.status(422).json({ message: 'A valid HTTP or HTTPS publication URL is required' });
+        }
+      } else if (!['recording', 'editing'].includes(content.status)) {
         return res.status(403).json({ message: 'Editors can only manage assigned content from Recording through Editing' });
       }
     }
     if (req.user.role === 'creator') {
-      if (content.status === 'editing') {
-        return res.status(403).json({ message: 'Creators cannot edit content during Editing & review' });
+      if (['recording', 'editing'].includes(content.status)) {
+        return res.status(403).json({ message: 'Creators can only view content during Recording and Editing & review' });
       }
       if (content.status === 'ready') {
-        const approvalFields = new Set(['status', 'published_url']);
+        const approvalFields = new Set(['status', 'published_url', 'creator_review_notes']);
         if (req.method !== 'PATCH' || Object.keys(req.body).some((field) => !approvalFields.has(field))) {
-          return res.status(403).json({ message: 'Creators can only approve ready content for publication' });
+          return res.status(403).json({ message: 'Creators can only add review notes, return ready content to an earlier stage, or approve it for publication' });
+        }
+        if (Object.prototype.hasOwnProperty.call(req.body, 'creator_review_notes')
+          && !req.body.creator_review_notes?.trim()) {
+          return res.status(422).json({ message: 'Creator review notes are required when submitting feedback' });
         }
       }
     }
@@ -242,12 +259,25 @@ async function updateContent(req, res, next) {
         return res.status(422).json({ message: 'Choose a valid editor account' });
       }
     }
+    if (['creator', 'admin'].includes(req.user.role)
+      && ['idea', 'scripting'].includes(content.status)
+      && !assignedEditorId) {
+      return res.status(422).json({ message: 'Assign an editor before saving this content' });
+    }
     const requestedStatus = body.status || content.status;
     const currentIndex = STATUSES.indexOf(content.status);
     const nextIndex = STATUSES.indexOf(requestedStatus);
-    if (nextIndex < currentIndex) return res.status(422).json({ message: 'Content cannot move to an earlier stage' });
+    const isCreatorRollback = req.user.role === 'creator'
+      && content.status === 'ready'
+      && nextIndex < STATUSES.indexOf('ready');
+    const isEditorRollback = req.user.role === 'editor'
+      && ['recording', 'editing'].includes(content.status)
+      && ['recording', 'editing'].includes(requestedStatus);
+    if (nextIndex < currentIndex && req.user.role !== 'admin' && !isCreatorRollback && !isEditorRollback) {
+      return res.status(422).json({ message: 'Content cannot move back to that stage' });
+    }
     if (nextIndex > currentIndex + 1) return res.status(422).json({ message: 'Content must progress through each stage in order' });
-    if (req.user.role === 'creator' && nextIndex > 2 && requestedStatus !== 'published') {
+    if (req.user.role === 'creator' && nextIndex > 2 && requestedStatus !== 'published' && !isCreatorRollback) {
       return res.status(403).json({ message: 'Creators can move content only through Recording; an editor must complete Editing & review' });
     }
     if (req.user.role === 'creator' && requestedStatus === 'recording' && !assignedEditorId) {
@@ -284,14 +314,21 @@ async function updateContent(req, res, next) {
       script_draft: typeof body.script_draft === 'string' ? body.script_draft.trim() : null,
       draft_url: req.user.role === 'creator' ? content.draft_url : body.draft_url || null,
       review_notes: req.user.role === 'creator'
-        ? content.review_notes
+        ? content.status === 'ready' && typeof body.review_notes === 'string'
+          ? body.review_notes.trim()
+          : content.review_notes
         : typeof body.review_notes === 'string' ? body.review_notes.trim() : null,
+      creator_review_notes: req.user.role === 'creator' && content.status === 'ready'
+        && typeof body.creator_review_notes === 'string'
+        ? body.creator_review_notes.trim()
+        : content.creator_review_notes,
       format_type: body.format_type,
       priority: body.priority || content.priority,
       status: requestedStatus,
       scheduled_date: body.scheduled_date || null,
       published_url: req.user.role === 'creator' && content.status !== 'ready'
         ? content.published_url
+        : isCreatorRollback ? null
         : body.published_url || null,
       assigned_editor_id: assignedEditorId,
     };
@@ -310,8 +347,8 @@ async function deleteContent(req, res, next) {
     const content = await findAccessibleContent(req.user, req.params.id);
     if (!content) return res.status(404).json({ message: 'Content not found' });
     if (req.user.role === 'editor') return res.status(403).json({ message: 'Editors cannot delete content' });
-    if (req.user.role === 'creator' && content.status === 'editing') {
-      return res.status(403).json({ message: 'Content cannot be deleted while its assigned editor is reviewing it' });
+    if (req.user.role === 'creator' && ['recording', 'editing'].includes(content.status)) {
+      return res.status(403).json({ message: 'Creators cannot delete content while its assigned editor is working on it' });
     }
     if (content.status === 'published') return res.status(409).json({ message: 'Published content cannot be deleted' });
     await db('contents').where({ id: content.id }).delete();
@@ -326,17 +363,52 @@ async function replaceChecklists(req, res, next) {
     const content = await findAccessibleContent(req.user, req.params.id);
     if (!content) return res.status(404).json({ message: 'Content not found' });
     if (content.status === 'published') return res.status(409).json({ message: 'The checklist for published content cannot be changed' });
-    if (req.user.role === 'editor') {
-      return res.status(403).json({ message: 'Only the creator can manage the production checklist' });
+    if (req.user.role === 'creator' && !['idea', 'scripting'].includes(content.status)) {
+      return res.status(403).json({ message: 'Creators can manage checklists only before Recording begins' });
     }
-    if (req.user.role === 'creator' && !['idea', 'scripting', 'recording'].includes(content.status)) {
-      return res.status(403).json({ message: 'Creators can manage checklists only through Recording' });
+    if (req.user.role === 'editor' && !['recording', 'editing'].includes(content.status)) {
+      return res.status(403).json({ message: 'Editors can update assigned production checklists during Recording and Editing' });
     }
     if (!Array.isArray(req.body.items) || req.body.items.length > 100) {
       return res.status(422).json({ message: 'The checklist must be a list of no more than 100 tasks' });
     }
     const items = req.body.items;
-    if (items.some((item) => typeof item.task_name !== 'string' || !item.task_name.trim() || item.task_name.trim().length > 255 || typeof item.is_completed !== 'boolean')) {
+    if (req.user.role === 'editor') {
+      const hasValidEditorItems = items.every((item) => item
+        && (Number.isSafeInteger(item.id) && item.id > 0
+          || typeof item.id === 'string' && /^\d+$/.test(item.id))
+        && typeof item.is_completed === 'boolean');
+      if (!hasValidEditorItems) {
+        return res.status(422).json({ message: 'Editors can only update the completion status of assigned checklist tasks' });
+      }
+      const saved = await db.transaction(async (trx) => {
+        const existingItems = await trx('content_checklists')
+          .where({ content_id: content.id })
+          .select('id');
+        const existingIds = new Set(existingItems.map((item) => String(item.id)));
+        const requestedIds = items.map((item) => String(item.id));
+        if (requestedIds.length !== existingIds.size
+          || new Set(requestedIds).size !== requestedIds.length
+          || requestedIds.some((id) => !existingIds.has(id))) {
+          return null;
+        }
+        for (const item of items) {
+          await trx('content_checklists')
+            .where({ content_id: content.id, id: item.id })
+            .update({ is_completed: item.is_completed });
+        }
+        return trx('content_checklists').where({ content_id: content.id }).orderBy('id');
+      });
+      if (!saved) {
+        return res.status(422).json({ message: 'Editors can only update checklist tasks assigned by the creator' });
+      }
+      return res.json(saved);
+    }
+    if (items.some((item) => !item
+      || typeof item.task_name !== 'string'
+      || !item.task_name.trim()
+      || item.task_name.trim().length > 255
+      || typeof item.is_completed !== 'boolean')) {
       return res.status(422).json({ message: 'Each task must have a name and a valid completion status' });
     }
     const saved = await db.transaction(async (trx) => {

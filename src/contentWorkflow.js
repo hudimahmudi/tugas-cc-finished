@@ -61,6 +61,7 @@ export function mapContentFromApi(content) {
     })),
     draftUrl: content.draft_url || '',
     reviewNotes: content.review_notes || '',
+    creatorReviewNotes: content.creator_review_notes || '',
     publishedUrl: content.published_url || '',
     metrics: {
       views: metrics.views_count == null ? '' : String(metrics.views_count),
@@ -83,6 +84,7 @@ export function mapContentToApi(content) {
     scheduled_date: content.scheduledDate || null,
     draft_url: content.draftUrl.trim() || null,
     review_notes: content.reviewNotes.trim() || null,
+    creator_review_notes: content.creatorReviewNotes.trim() || null,
     published_url: content.publishedUrl.trim() || null,
     assigned_editor_id: content.assignedEditorId || null,
   }

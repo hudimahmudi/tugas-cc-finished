@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import Swal from 'sweetalert2'
 
 function Register({ onRegister, onLogin }) {
   const [error, setError] = useState('')
@@ -24,7 +25,12 @@ function Register({ onRegister, onLogin }) {
         password,
         role: formData.get('role').toString(),
       })
-      window.alert('Akun berhasil dibuat. Silakan masuk menggunakan email dan password Anda.')
+      await Swal.fire({
+        icon: 'success',
+        title: 'Pendaftaran berhasil',
+        text: 'Akun berhasil dibuat. Silakan masuk menggunakan email dan password Anda.',
+        confirmButtonText: 'Masuk sekarang',
+      })
       onLogin()
     } catch (requestError) {
       setError(requestError.message)
