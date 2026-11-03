@@ -81,7 +81,9 @@ npm run build
 - Tambahkan channel sosial sebelum membuat konten.
 - Creator mengelola ide, scripting, dan checklist produksi sebelum Recording; setelah itu Creator hanya dapat melihat progres dan checklist Editor selama Recording dan Editing & review.
 - Editor hanya melihat konten yang ditugaskan kepadanya, mengerjakan editing & review, lalu mengirim konten ke Ready.
-- Creator dapat menyimpan review notes untuk menilai hasil edit dan menyampaikan revisi; Editor yang ditugaskan dapat melihat catatan tersebut pada konten Ready.
+- Creator dapat menyimpan creator review notes di konten Ready tanpa mengubah status; Editor yang ditugaskan dapat membaca catatan tersebut.
+- Creator dapat mengunggah file konten mentah sebelum Recording, dan Editor dapat mengunduhnya. Editor mengunggah file draft (video, gambar, PDF, Word, atau teks, maksimal 100 MB) beserta editor review notes sebelum mengirim konten ke Ready.
+- File upload disimpan pada `backend/uploads` dan metadata filenya disimpan di database; jalankan migrasi (`npm run migrate` dari folder `backend`) setelah memperbarui aplikasi.
 - Creator dapat mengembalikan konten Ready ke tahap sebelumnya untuk revisi; Editor dapat mengembalikan Editing ke Recording. Admin dapat mengatur tahap workflow. Konten Published terkunci dan tidak dapat diubah atau dikembalikan ke tahap sebelumnya.
 - Creator memeriksa konten Ready dan menyetujui publikasi dengan memasukkan URL publik yang valid.
 - Konten tidak dapat dipublikasikan tanpa URL HTTP/HTTPS yang valid.

@@ -1,8 +1,49 @@
 const db = require('../config/db');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const multer = require('multer');
 const {
   applyContentAccess,
   findAccessibleContent,
 } = require('../middleware/contentAccess');
+
+const uploadDirectory = path.resolve(__dirname, '../../uploads');
+fs.mkdirSync(uploadDirectory, { recursive: true });
+
+const allowedFileTypes = new Map([
+  ['.mp4', new Set(['video/mp4'])],
+  ['.mov', new Set(['video/quicktime'])],
+  ['.webm', new Set(['video/webm'])],
+  ['.jpg', new Set(['image/jpeg'])],
+  ['.jpeg', new Set(['image/jpeg'])],
+  ['.png', new Set(['image/png'])],
+  ['.webp', new Set(['image/webp'])],
+  ['.pdf', new Set(['application/pdf'])],
+  ['.doc', new Set(['application/msword'])],
+  ['.docx', new Set(['application/vnd.openxmlformats-officedocument.wordprocessingml.document'])],
+  ['.txt', new Set(['text/plain'])],
+]);
+
+const contentFileUpload = multer({
+  storage: multer.diskStorage({
+    destination: uploadDirectory,
+    filename: (_req, file, callback) => {
+      callback(null, `${crypto.randomUUID()}${path.extname(file.originalname).toLowerCase()}`);
+    },
+  }),
+  limits: { fileSize: 100 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, callback) => {
+    const extension = path.extname(file.originalname).toLowerCase();
+    if (!allowedFileTypes.get(extension)?.has(file.mimetype)) {
+      const error = new Error('Upload a video, image, PDF, Word document, or text file');
+      error.status = 422;
+      callback(error);
+      return;
+    }
+    callback(null, true);
+  },
+});
 
 const STATUSES = ['idea', 'scripting', 'recording', 'editing', 'ready', 'published'];
 const FORMATS = ['short_video', 'long_video', 'carousel', 'single_post'];
@@ -35,8 +76,15 @@ function dateOnly(value) {
 }
 
 function serializeContent(content) {
+  const publicContent = { ...content };
+  for (const field of [
+    'raw_file_path', 'raw_file_mime', 'raw_file_size',
+    'draft_file_path', 'draft_file_mime', 'draft_file_size',
+  ]) {
+    delete publicContent[field];
+  }
   return {
-    ...content,
+    ...publicContent,
     scheduled_date: dateOnly(content.scheduled_date),
     published_date: dateOnly(content.published_date),
   };
@@ -89,7 +137,7 @@ async function listContents(req, res, next) {
         'content_owner.name as owner_name', 'contents.assigned_editor_id',
         'assigned_editor.name as assigned_editor_name',
         'contents.title', 'contents.description', 'contents.script_draft', 'contents.draft_url', 'contents.review_notes',
-        'contents.creator_review_notes',
+        'contents.creator_review_notes', 'contents.raw_file_name', 'contents.draft_file_name',
         'contents.format_type', 'contents.status', 'contents.priority',
         'contents.scheduled_date', 'contents.published_date', 'contents.published_url',
         'contents.created_at', 'contents.updated_at',
@@ -243,10 +291,6 @@ async function updateContent(req, res, next) {
         if (req.method !== 'PATCH' || Object.keys(req.body).some((field) => !approvalFields.has(field))) {
           return res.status(403).json({ message: 'Creators can only add review notes, return ready content to an earlier stage, or approve it for publication' });
         }
-        if (Object.prototype.hasOwnProperty.call(req.body, 'creator_review_notes')
-          && !req.body.creator_review_notes?.trim()) {
-          return res.status(422).json({ message: 'Creator review notes are required when submitting feedback' });
-        }
       }
     }
     body.scheduled_date = dateOnly(body.scheduled_date);
@@ -298,8 +342,9 @@ async function updateContent(req, res, next) {
         return res.status(422).json({ message: 'Complete all production checklist items before moving content to Editing' });
       }
     }
-    if (nextIndex >= 4 && (!validUrl(body.draft_url || '') || !body.review_notes?.trim())) {
-      return res.status(422).json({ message: 'A draft link and review notes are required before content is Ready to publish' });
+    if (nextIndex === 4 && currentIndex < 4
+      && (!content.draft_file_path || !body.review_notes?.trim())) {
+      return res.status(422).json({ message: 'An uploaded draft file and review notes are required before content is Ready to publish' });
     }
 
     const channelQuery = db('channels').where({ id: body.channel_id });
@@ -352,6 +397,14 @@ async function deleteContent(req, res, next) {
     }
     if (content.status === 'published') return res.status(409).json({ message: 'Published content cannot be deleted' });
     await db('contents').where({ id: content.id }).delete();
+    const storedFiles = [content.raw_file_path, content.draft_file_path].filter(Boolean);
+    await Promise.all(storedFiles.map(async (storedPath) => {
+      try {
+        await fs.promises.unlink(path.join(uploadDirectory, path.basename(storedPath)));
+      } catch (err) {
+        if (err.code !== 'ENOENT') console.error('Unable to remove deleted content file:', err);
+      }
+    }));
     res.status(204).end();
   } catch (err) {
     next(err);
@@ -454,6 +507,94 @@ async function createMetricSnapshot(req, res, next) {
   }
 }
 
+async function authorizeContentFileUpload(req, res, next) {
+  try {
+    if (!['raw', 'draft'].includes(req.params.kind)) {
+      return res.status(422).json({ message: 'File type is invalid' });
+    }
+    const content = await findAccessibleContent(req.user, req.params.id);
+    if (!content) return res.status(404).json({ message: 'Content not found' });
+    if (content.status === 'published') {
+      return res.status(409).json({ message: 'Files for published content cannot be changed' });
+    }
+    if (req.params.kind === 'raw'
+      && !(req.user.role === 'admin'
+        || req.user.role === 'creator' && ['idea', 'scripting'].includes(content.status))) {
+      return res.status(403).json({ message: 'Only the creator can upload raw content before Recording' });
+    }
+    if (req.params.kind === 'draft'
+      && !(req.user.role === 'admin'
+        || req.user.role === 'editor' && ['recording', 'editing'].includes(content.status))) {
+      return res.status(403).json({ message: 'Only the assigned editor can upload a draft during Recording or Editing' });
+    }
+    req.content = content;
+    next();
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function saveContentFile(req, res, next) {
+  if (!req.file) return res.status(422).json({ message: 'Choose a file to upload' });
+  try {
+    const { content, params: { kind } } = req;
+    const name = req.file.originalname.split(/[\\/]/).pop().slice(0, 255);
+    const columns = kind === 'raw'
+      ? {
+        raw_file_name: name,
+        raw_file_path: req.file.filename,
+        raw_file_mime: req.file.mimetype,
+        raw_file_size: req.file.size,
+      }
+      : {
+        draft_file_name: name,
+        draft_file_path: req.file.filename,
+        draft_file_mime: req.file.mimetype,
+        draft_file_size: req.file.size,
+        draft_url: null,
+      };
+    await db('contents').where({ id: content.id }).update(columns);
+    const previousPath = kind === 'raw' ? content.raw_file_path : content.draft_file_path;
+    if (previousPath) {
+      try {
+        await fs.promises.unlink(path.join(uploadDirectory, path.basename(previousPath)));
+      } catch (err) {
+        if (err.code !== 'ENOENT') console.error('Unable to remove replaced content file:', err);
+      }
+    }
+    res.json({ file_name: name, file_size: req.file.size });
+  } catch (err) {
+    await fs.promises.unlink(req.file.path).catch((cleanupError) => {
+      if (cleanupError.code !== 'ENOENT') console.error('Unable to remove failed content upload:', cleanupError);
+    });
+    next(err);
+  }
+}
+
+async function downloadContentFile(req, res, next) {
+  try {
+    if (!['raw', 'draft'].includes(req.params.kind)) {
+      return res.status(422).json({ message: 'File type is invalid' });
+    }
+    const content = await findAccessibleContent(req.user, req.params.id);
+    if (!content) return res.status(404).json({ message: 'Content not found' });
+    const fileName = req.params.kind === 'raw' ? content.raw_file_name : content.draft_file_name;
+    const storedPath = req.params.kind === 'raw' ? content.raw_file_path : content.draft_file_path;
+    if (!storedPath || !fileName) return res.status(404).json({ message: 'File not found' });
+    const filePath = path.resolve(uploadDirectory, path.basename(storedPath));
+    if (!filePath.startsWith(`${uploadDirectory}${path.sep}`)) {
+      return res.status(404).json({ message: 'File not found' });
+    }
+    await fs.promises.access(filePath);
+    res.download(filePath, fileName, (err) => {
+      if (err && !res.headersSent) next(err);
+    });
+  } catch (err) {
+    if (err.code === 'ENOENT') return res.status(404).json({ message: 'File not found' });
+    next(err);
+  }
+}
+
 module.exports = {
   listContents,
   getContent,
@@ -462,4 +603,8 @@ module.exports = {
   deleteContent,
   replaceChecklists,
   createMetricSnapshot,
+  authorizeContentFileUpload,
+  contentFileUpload,
+  saveContentFile,
+  downloadContentFile,
 };

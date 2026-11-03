@@ -10,6 +10,7 @@ import {
   createChannel as createChannelRequest,
   createContent as createContentRequest,
   createMetricSnapshot,
+  downloadContentFile as downloadContentFileRequest,
   deleteContent as deleteContentRequest,
   getContent as getContentRequest,
   listChannels,
@@ -18,6 +19,7 @@ import {
   register as registerRequest,
   replaceChecklists,
   updateContent as updateContentRequest,
+  uploadContentFile as uploadContentFileRequest,
 } from './api.js'
 import { mapContentFromApi, mapContentToApi } from './contentWorkflow.js'
 import { roleAccess, roleLabels } from './roles.js'
@@ -180,11 +182,20 @@ function App() {
       await replaceChecklists(created.id, checklistPayload(newContent.productionChecklist))
     }
     await refreshWorkspace()
-    showNotice('Content saved successfully.')
+    return created.id
+  }
+
+  async function uploadContentFile(contentId, kind, file) {
+    const result = await uploadContentFileRequest(contentId, kind, file)
+    await refreshWorkspace()
+    return result
   }
 
   async function updateContent(updatedContent) {
     const originalContent = contents.find((content) => content.id === updatedContent.id)
+    const isCreatorNotesOnly = user.role === 'creator'
+      && originalContent?.status === 'ready'
+      && updatedContent.status === 'ready'
     const canUpdateChecklist = user.role === 'admin'
       || (user.role === 'creator' && ['idea', 'scripting'].includes(originalContent?.status))
       || (user.role === 'editor' && ['recording', 'editing'].includes(originalContent?.status))
@@ -199,7 +210,6 @@ function App() {
       } else {
         await updateContentRequest(updatedContent.id, {
           status: updatedContent.status,
-          draft_url: updatedContent.draftUrl.trim() || null,
           review_notes: updatedContent.reviewNotes.trim() || null,
         }, 'PATCH')
       }
@@ -207,15 +217,13 @@ function App() {
       await updateContentRequest(updatedContent.id, {
         status: updatedContent.status,
         published_url: updatedContent.publishedUrl.trim() || null,
-        ...(updatedContent.creatorReviewNotes.trim()
-          ? { creator_review_notes: updatedContent.creatorReviewNotes.trim() }
-          : {}),
+        creator_review_notes: updatedContent.creatorReviewNotes.trim(),
       }, 'PATCH')
     } else {
       await updateContentRequest(updatedContent.id, mapContentToApi(updatedContent))
     }
     await refreshWorkspace()
-    showNotice('Content changes saved successfully.')
+    if (!isCreatorNotesOnly) showNotice('Content changes saved successfully.')
   }
 
   async function removeContent(contentId) {
@@ -292,6 +300,8 @@ function App() {
             role={account.id}
             onAddContent={addContent}
             onUpdateContent={updateContent}
+            onUploadContentFile={uploadContentFile}
+            onDownloadContentFile={downloadContentFileRequest}
             onDeleteContent={removeContent}
             onSaveMetrics={saveMetricSnapshot}
             onLoadContent={getContentRequest}

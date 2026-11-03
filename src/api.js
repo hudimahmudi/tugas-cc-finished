@@ -71,3 +71,39 @@ export function replaceChecklists(id, items) {
 export function createMetricSnapshot(id, metrics) {
   return request(`/contents/${id}/metrics`, { method: 'POST', body: metrics })
 }
+
+export async function uploadContentFile(id, kind, file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  const response = await fetch(`${API_BASE}/contents/${id}/files/${kind}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${localStorage.getItem('creator-session-token')}` },
+    body: formData,
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    const error = new Error(payload.message || 'File upload failed. Please try again.')
+    error.status = response.status
+    throw error
+  }
+  return payload
+}
+
+export async function downloadContentFile(id, kind, fileName) {
+  const response = await fetch(`${API_BASE}/contents/${id}/files/${kind}`, {
+    headers: { Authorization: `Bearer ${localStorage.getItem('creator-session-token')}` },
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}))
+    throw new Error(payload.message || 'Unable to download this file.')
+  }
+  const blob = await response.blob()
+  const objectUrl = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = objectUrl
+  link.download = fileName || decodeURIComponent(response.headers.get('Content-Disposition')?.match(/filename="?([^";]+)"?/i)?.[1] || 'content-file')
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+}

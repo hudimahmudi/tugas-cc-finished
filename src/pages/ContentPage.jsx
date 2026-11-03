@@ -35,7 +35,10 @@ function createDraft(content = {}, channels = []) {
     scheduledDate: content.scheduledDate || '',
     script: content.script || '',
     productionChecklist: content.productionChecklist || [],
-    draftUrl: content.draftUrl || '',
+    rawFile: null,
+    rawFileName: content.rawFileName || '',
+    draftFile: null,
+    draftFileName: content.draftFileName || '',
     reviewNotes: content.reviewNotes || '',
     creatorReviewNotes: content.creatorReviewNotes || '',
     publishedUrl: content.publishedUrl || '',
@@ -57,7 +60,7 @@ function localDateValue() {
   return new Date(date.getTime() - offset * 60_000).toISOString().slice(0, 10)
 }
 
-function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateContent, onDeleteContent, onSaveMetrics, onLoadContent, onRefresh, role = 'creator' }) {
+function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateContent, onUploadContentFile, onDownloadContentFile, onDeleteContent, onSaveMetrics, onLoadContent, onRefresh, role = 'creator' }) {
   const [activeDraft, setActiveDraft] = useState(null)
   const [searchText, setSearchText] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -97,7 +100,7 @@ function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateC
   const selectableStatuses = contentStatuses.filter((status, index) => {
     if (isEditor) {
       if (sourceStageIndex === 4) return index === 4
-      return [2, 3].includes(sourceStageIndex) && [2, 3].includes(index)
+      return [2, 3].includes(sourceStageIndex) && index >= 2 && index <= Math.min(sourceStageIndex + 1, 4)
     }
     if (isCreator && sourceStageIndex === 4) return index <= 4 || index === 5
     if (isAdmin) return true
@@ -233,34 +236,46 @@ function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateC
       return
     }
     if (isEditor && targetIndex === 4
-      && (!isValidHttpUrl(activeDraft.draftUrl) || !activeDraft.reviewNotes.trim())) {
-      setFormError('Add a valid draft link and review notes before moving content to Ready.')
-      return
-    }
-    if (isCreator && currentIndex === 4 && targetIndex === 4
-      && !activeDraft.creatorReviewNotes.trim()) {
-      setFormError('Add creator review notes before saving your feedback.')
-      return
-    }
-    if (!isEditor && targetIndex >= 4 && targetIndex > currentIndex
-      && (!isValidHttpUrl(activeDraft.draftUrl) || !activeDraft.reviewNotes.trim())) {
-      setFormError('Add a valid draft link and review notes before marking content as Ready to publish.')
-      return
-    }
-    if (activeDraft.draftUrl && !isValidHttpUrl(activeDraft.draftUrl)) {
-      setFormError('The draft link must be a valid HTTP or HTTPS URL.')
+      && (!(activeDraft.draftFile || activeDraft.draftFileName)
+        || !activeDraft.reviewNotes.trim())) {
+      setFormError('Upload a draft file and add review notes before moving content to Ready.')
       return
     }
     if (targetIndex === 5 && !isValidHttpUrl(activeDraft.publishedUrl)) {
       setFormError('A valid HTTP or HTTPS publication URL is required before publishing content.')
       return
     }
+    if (activeDraft.rawFile?.size > 100 * 1024 * 1024 || activeDraft.draftFile?.size > 100 * 1024 * 1024) {
+      setFormError('Each file must be 100 MB or smaller.')
+      return
+    }
 
     setIsSaving(true)
     setFormError('')
     try {
-      if (isNewContent) await onAddContent(activeDraft)
-      else await onUpdateContent(activeDraft)
+      let contentId = activeDraft.id
+      if (isNewContent) {
+        contentId = await onAddContent(activeDraft)
+        setActiveDraft((current) => ({ ...current, id: contentId }))
+      }
+      if (activeDraft.rawFile) {
+        const uploaded = await onUploadContentFile(contentId, 'raw', activeDraft.rawFile)
+        setActiveDraft((current) => ({ ...current, rawFile: null, rawFileName: uploaded.file_name }))
+      }
+      if (activeDraft.draftFile) {
+        const uploaded = await onUploadContentFile(contentId, 'draft', activeDraft.draftFile)
+        setActiveDraft((current) => ({ ...current, draftFile: null, draftFileName: uploaded.file_name }))
+      }
+      if (!isNewContent) await onUpdateContent(activeDraft)
+      else {
+        await Swal.fire({
+          icon: 'success',
+          title: 'Idea berhasil ditambahkan',
+          text: 'Idea sudah tersimpan.',
+          showConfirmButton: false,
+          timer: 2200,
+        })
+      }
       setActiveDraft(null)
     } catch (error) {
       setFormError(error.message)
@@ -470,6 +485,36 @@ function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateC
 
               {(isCreator || isAdmin) && (
                 <section className="workflow-stage-section">
+                  <div className="workflow-section-heading"><strong>Upload file</strong><span>Upload source material for the assigned editor before Recording</span></div>
+                  <label htmlFor="content-raw-file">Raw content file</label>
+                  <input id="content-raw-file" type="file" accept="video/mp4,video/quicktime,video/webm,image/jpeg,image/png,image/webp,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" onChange={(event) => updateDraft('rawFile', event.target.files[0] || null)} disabled={!canEditDetails} />
+                  {activeDraft.rawFile && <small>Selected: {activeDraft.rawFile.name}</small>}
+                  {activeDraft.rawFileName && <button type="button" className="button-outline" onClick={async () => {
+                    try {
+                      await onDownloadContentFile(activeDraft.id, 'raw', activeDraft.rawFileName)
+                    } catch (error) {
+                      setFormError(error.message)
+                    }
+                  }}>{activeDraft.rawFileName} · Download</button>}
+                  {!canEditDetails && !activeDraft.rawFileName && <small>Raw file uploads are available before Recording begins.</small>}
+                  <small>Video, image, PDF, Word, or text file · maximum 100 MB.</small>
+                </section>
+              )}
+              {isEditor && sourceContent?.rawFileName && (
+                <section className="workflow-stage-section">
+                  <div className="workflow-section-heading"><strong>Creator raw content</strong><span>Source material provided by the creator</span></div>
+                  <button type="button" className="button-outline" onClick={async () => {
+                    try {
+                      await onDownloadContentFile(activeDraft.id, 'raw', sourceContent.rawFileName)
+                    } catch (error) {
+                      setFormError(error.message)
+                    }
+                  }}>{sourceContent.rawFileName} · Download</button>
+                </section>
+              )}
+
+              {(isCreator || isAdmin) && (
+                <section className="workflow-stage-section">
                   <label htmlFor="content-editor">Assigned editor</label>
                   <select id="content-editor" value={activeDraft.assignedEditorId} onChange={(event) => updateDraft('assignedEditorId', event.target.value)} disabled={!canEditAssignment} required={canEditAssignment}>
                     <option value="">Not assigned</option>
@@ -516,9 +561,16 @@ function ContentPage({ contents, channels, editors = [], onAddContent, onUpdateC
               {(draftStageIndex >= 3 || isEditor) && (
                 <section className="workflow-stage-section">
                   <div className="workflow-section-heading"><strong>Editing & review</strong><span>{isEditor ? 'Prepare the draft and submit it for creator approval' : isCreator && sourceStageIndex === 4 ? 'Review the editor draft and add feedback' : 'Editor-submitted draft and review notes'}</span></div>
-                  <label htmlFor="content-draft-url">Draft link</label>
-                  <input id="content-draft-url" type="url" value={activeDraft.draftUrl} onChange={(event) => updateDraft('draftUrl', event.target.value)} placeholder="https://..." disabled={!canEditReview} />
-                  {activeDraft.draftUrl && isValidHttpUrl(activeDraft.draftUrl) && <a className="kanban-published-link" href={activeDraft.draftUrl} target="_blank" rel="noreferrer"><ExternalLink size={11} /> Open editor draft</a>}
+                  <label htmlFor="content-draft-file">Upload edited draft file</label>
+                  <input id="content-draft-file" type="file" accept="video/mp4,video/quicktime,video/webm,image/jpeg,image/png,image/webp,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" onChange={(event) => updateDraft('draftFile', event.target.files[0] || null)} disabled={!canEditReview} />
+                  {activeDraft.draftFile && <small>Selected: {activeDraft.draftFile.name}</small>}
+                  {!activeDraft.draftFile && activeDraft.draftFileName && <button type="button" className="button-outline" onClick={async () => {
+                    try {
+                      await onDownloadContentFile(activeDraft.id, 'draft', activeDraft.draftFileName)
+                    } catch (error) {
+                      setFormError(error.message)
+                    }
+                  }}>{activeDraft.draftFileName} · Download</button>}
                   <label htmlFor="content-review-notes">Editor review notes</label>
                   <textarea id="content-review-notes" value={activeDraft.reviewNotes} onChange={(event) => updateDraft('reviewNotes', event.target.value)} placeholder="Editor notes on the draft..." rows="3" disabled={!canEditReview} />
                   {(isCreator && sourceStageIndex === 4) || (isEditor && [2, 3, 4].includes(sourceStageIndex)) || (isAdmin && sourceStageIndex >= 2) ? (
